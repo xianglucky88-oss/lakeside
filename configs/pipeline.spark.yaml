@@ -1,0 +1,39 @@
+# 生产配置：PySpark + Iceberg + MinIO（本地不做验证，仅作为上线目标）
+#
+# 本地验证走 DuckDB，见 lakeside/engine.py。
+
+spark:
+  app_name: lakeside
+  master: "spark://spark-master:7077"
+  executor_memory: 2g
+  driver_memory: 1g
+
+catalog:
+  name: local
+  type: hadoop
+  warehouse: s3a://lake/_warehouse
+  s3:
+    endpoint: http://minio:9000
+    access_key_env: AWS_ACCESS_KEY_ID
+    secret_key_env: AWS_SECRET_ACCESS_KEY
+
+layers:
+  ods:
+    format: parquet
+    partition_keys: []
+  dwd:
+    format: iceberg
+    partition_keys: [biz_date]
+    write_mode: dynamic-overwrite
+  dws:
+    format: iceberg
+    partition_keys: [biz_date]
+  ads:
+    format: iceberg
+    partition_keys: [month]
+
+schedule:
+  # 等价于 Dagster 的 cron，生产由调度器触发
+  dwd: "0 2 * * *"
+  dws: "0 3 * * *"
+  ads: "0 4 * * *"

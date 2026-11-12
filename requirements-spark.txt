@@ -1,0 +1,4 @@
+# 生产实现（起 Spark 集群，本地验证不需要）
+pyspark==3.5.3
+# Iceberg runtime jar 由 spark-submit --packages 提供：
+#   org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.6.1
