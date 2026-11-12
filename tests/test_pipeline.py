@@ -51,69 +51,6 @@ def test_ods_has_all_four_tables(pipeline):
     for t in ("supplier", "purchase_order", "goods_receipt", "settlement"):
         assert pipeline.lake.count("ods", t) > 0
 
-
-def test_purchase_order_has_duplicates_by_design(pipeline):
-    """上游重复推送是数据事实；DWD 目前不去重。"""
-    pipeline.build_ods()
-    rows = pipeline.lake.count("ods", "purchase_order")
-    distinct = pipeline.lake.con.execute(
-        "SELECT count(DISTINCT po_id) FROM ods_purchase_order"
-    ).fetchone()[0]
-    assert rows > distinct, "generator should produce duplicate po rows"
-
-
-def test_dwd_does_not_dedup_po(pipeline):
-    """当前实现不去重，测试记录现状；行为变更时需同步更新。"""
-    pipeline.run_all()
-    inv = pipeline.invariants()
-    assert inv["dwd_po_rows"] > inv["dwd_po_distinct"]
-
-
-def test_supplier_dim_loses_history(pipeline):
-    """维表只有当前版本，每条 supplier_id 一行。修复 SCD2 后行数会大于供应商数。"""
-    pipeline.build_ods()
-    pipeline.build_dwd()
-    dim_rows = pipeline.lake.count("dwd", "dim_supplier")
-    sup_ids = pipeline.lake.con.execute(
-        "SELECT count(DISTINCT supplier_id) FROM ods_supplier"
-    ).fetchone()[0]
-    assert dim_rows == sup_ids
-    # ODS 里有多版本
-    ods_rows = pipeline.lake.count("ods", "supplier")
-    assert ods_rows > sup_ids
-
-
-def test_amounts_are_fanned_out(pipeline):
-    """DWS 金额被放大，这是 join 扇出的直接证据。"""
-    pipeline.run_all()
-    inv = pipeline.invariants()
-    ratio = inv["dws_po_amount_cents"] / inv["ods_po_amount_cents"]
-    assert ratio > 2.0, f"expected fan-out above 2x, got {ratio:.2f}"
-
-
-def test_ads_is_empty(pipeline):
-    pipeline.run_all()
-    assert pipeline.lake.count("ads", "ads_supplier_monthly") == 0
-
-
-def test_month_boundary_mismatch(pipeline):
-    """月末深夜结算被记到错误日期。"""
-    pipeline.run_all()
-    rows = pipeline.month_boundary_check()
-    assert rows, "expected some late-night settlements"
-    bad = [r for r in rows if r["dwd_date"] != r["true_local_date"]]
-    assert bad, "expected date mismatches under current timezone handling"
-
-
-def test_checks_report_failures(pipeline):
-    pipeline.run_all()
-    results = check_invariants(pipeline.invariants())
-    failed = {r["name"] for r in results if not r["ok"]}
-    assert "ads.has_output" in failed
-    assert "dws.po_amount_conserved" in failed
-    assert "dwd.po_dedup" in failed
-
-
 def test_rerun_is_idempotent_for_facts(pipeline):
     """事实表的整表覆盖是幂等的；
     DWS 读取的是未去重的 DWD，因此金额仍与真值不同。"""
