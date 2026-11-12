@@ -49,18 +49,18 @@ def cmd_verify(args) -> int:
     problems = []
     if inv.get("dwd_po_rows", 0) > inv.get("dwd_po_distinct", 0):
         problems.append(
-            f"DWD 采购单未去重：{inv['dwd_po_rows']:.0f} 行 / {inv['dwd_po_distinct']:.0f} 个 po_id"
+            f"DWD 采购单行数 {inv['dwd_po_rows']:.0f} / 去重 po_id {inv['dwd_po_distinct']:.0f}"
         )
     if inv.get("ods_po_amount_cents") and inv.get("dws_po_amount_cents"):
         ratio = inv["dws_po_amount_cents"] / inv["ods_po_amount_cents"]
         if abs(ratio - 1) > 0.01:
-            problems.append(f"DWS 采购金额被放大 {ratio:.2f} 倍")
+            problems.append(f"DWS 采购金额与 ODS 真值之比 = {ratio:.4f}")
     if inv.get("ods_gr_amount_cents") and inv.get("dws_received_cents"):
         ratio = inv["dws_received_cents"] / inv["ods_gr_amount_cents"]
         if abs(ratio - 1) > 0.05:
-            problems.append(f"DWS 入库金额被放大 {ratio:.2f} 倍（join 扇出）")
+            problems.append(f"DWS 入库金额与 ODS 真值之比 = {ratio:.4f}")
     if inv.get("ads_rows", 0) == 0:
-        problems.append("ADS 产出为空（ads_supplier_monthly 未实现）")
+        problems.append("ADS 产出为空")
 
     if problems:
         print("\n== 守恒检查：发现问题 ==")

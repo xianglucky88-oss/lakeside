@@ -95,7 +95,7 @@ class Pipeline:
     # ---------- DWS ----------
 
     def build_dws(self) -> list[AssetResult]:
-        # 这一层是草稿：SQL 能跑，但金额被重复行与 join 扇出放大。
+        # 这一层是草稿。
         return [self._build_asset("dws", "dws_po_summary", keys=["po_id"], merge=False)]
 
     # ---------- ADS ----------
@@ -208,7 +208,7 @@ class Pipeline:
         """检查结算日的月末归属问题。
 
         取 UTC 22:00 之后的结算记录，看它们的 settle_date 与
-        biz_date_local 是否一致。不一致的说明被算到了错误的月份。
+        biz_date_local 是否一致。
         """
         if not self.lake.exists("dwd", "fact_settlement"):
             return []

@@ -4,8 +4,8 @@
 
   * supplier      供应商主数据。同一 supplier_id 有多条历史记录（不同生效区间），
                   正是 SCD2 的输入。
-  * purchase_order 采购单。存在**重复行**（同一 po_id 多行，行内容一致），
-                  这是 DWD join 扇出的根源。
+  * purchase_order 采购单。
+
   * goods_receipt  入库单。一个 po_id 对应多条入库（分批到货），一对多。
   * settlement     结算单。金额按分存储，有时区偏移的日期字段。
 
@@ -70,7 +70,7 @@ def generate(settings, n_suppliers: int = 60, n_po: int = 400, n_gr_per_po: int 
     )
     counts["supplier"] = len(sup_rows)
 
-    # ---------- purchase_order：含重复行 ----------
+    # ---------- purchase_order ----------
     po_rows = []
     po_ids = []
     for i in range(1, n_po + 1):

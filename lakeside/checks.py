@@ -46,7 +46,7 @@ def check_invariants(inv: dict[str, float], tolerance: float = 0.01) -> list[dic
             f"DWS {dws_po:,.0f} / ODS {ods_po:,.0f} = {ratio:.4f}",
         )
 
-    # 4. DWS 入库金额守恒（join 扇出的直接证据）
+    # 4. DWS 入库金额守恒
     ods_gr = inv.get("ods_gr_amount_cents", 0)
     dws_gr = inv.get("dws_received_cents", 0)
     if ods_gr and dws_gr:
