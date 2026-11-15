@@ -15,9 +15,10 @@ import json
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from .config import settings
+from .admission.gate import AdmissionGate
 from .engine import Lake
 from .generator import generate
 
@@ -63,21 +64,50 @@ class Pipeline:
     # ---------- ODS ----------
 
     def build_ods(self, regenerate: bool = True) -> AssetResult:
+        """源批次经准入层落地、校验、隔离后，由台账重建可消费 ODS。"""
         start = time.perf_counter()
-        counts: dict[str, int] = {}
+        received: dict[str, int] = {}
         if regenerate:
-            counts = generate(settings, n_suppliers=60, n_po=400)
+            received = generate(settings, n_suppliers=60, n_po=400)
+        else:
+            # 不重新生成时，仍以台账为准重建一次 ODS（保证异常修复后视图一致）。
+            AdmissionGate(
+                settings.lake_root,
+                tz_offset_hours=settings.source_tz_offset_hours,
+            ).rebuild_all_ods()
         self.lake.refresh_views()
+        counts: dict[str, int] = {}
         for t in ("supplier", "purchase_order", "goods_receipt", "settlement"):
-            counts.setdefault(t, self.lake.count("ods", t))
+            counts[t] = self.lake.count("ods", t)
+            received.setdefault(t, counts[t])
         res = AssetResult(
             name="ods",
             rows=sum(counts.values()),
             seconds=time.perf_counter() - start,
-            extra={k: float(v) for k, v in counts.items()},
+            extra={
+                **{k: float(v) for k, v in counts.items()},
+                **{f"received_{k}": float(v) for k, v in received.items()},
+            },
         )
         self.results.append(res)
         return res
+
+    def admission_report(self) -> dict[str, Any]:
+        """准入层台账汇总：逐表 accepted / held / quarantined 与批次结论。"""
+        gate = AdmissionGate(
+            settings.lake_root, tz_offset_hours=settings.source_tz_offset_hours
+        )
+        per_table: dict[str, dict[str, int]] = {}
+        for t in gate.registry.tables():
+            states = {"accepted": 0, "held": 0, "quarantined": 0, "superseded": 0}
+            for r in gate.read_ledger(t):
+                states[r["state"]] = states.get(r["state"], 0) + 1
+            per_table[t] = states
+        return {
+            "batches": gate.read_batches(),
+            "row_ledger": per_table,
+            "open_decisions": len(gate.open_decisions()),
+        }
 
     # ---------- DWD ----------
 

@@ -29,6 +29,14 @@ class Settings:
         return self.lake_root / "ods"
 
     @property
+    def landing(self) -> Path:
+        return self.lake_root / "landing"
+
+    @property
+    def quarantine(self) -> Path:
+        return self.lake_root / "quarantine"
+
+    @property
     def dwd(self) -> Path:
         return self.lake_root / "dwd"
 
@@ -41,7 +49,7 @@ class Settings:
         return self.lake_root / "ads"
 
     def ensure(self) -> None:
-        for p in (self.ods, self.dwd, self.dws, self.ads):
+        for p in (self.landing, self.quarantine, self.ods, self.dwd, self.dws, self.ads):
             p.mkdir(parents=True, exist_ok=True)
 
 

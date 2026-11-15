@@ -1,6 +1,16 @@
 # 生产配置：PySpark + Iceberg + MinIO（本地不做验证，仅作为上线目标）
 #
 # 本地验证走 DuckDB，见 lakeside/engine.py。
+# 准入层（lakeside/admission）只用 Parquet/JSON 与目录约定，无引擎私有状态，
+# 生产侧等价实现：landing/quarantine 用 Parquet、契约 JSON 放元数据桶、
+# 批次/行台账可替换为 Iceberg 表，准入判定逻辑保持一致。
+
+# 准入分区：landing 只追加原始证据；quarantine 持台账；ods 仅由 accepted 行重建。
+admission:
+  landing_format: parquet
+  ledger_format: parquet
+  contract_format: json
+  write_mode: append-only   # landing/台账只追加；结论以新版本覆盖，绝不就地改写证据
 
 spark:
   app_name: lakeside

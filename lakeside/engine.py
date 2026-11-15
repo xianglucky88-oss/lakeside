@@ -20,6 +20,15 @@ from typing import Any
 import duckdb
 
 
+class RecordList(list):
+    """查询结果：行为 dict 的列表，兼容 ``DataFrame.to_dict('records')`` 的用法。"""
+
+    def to_dict(self, orient: str = "records") -> list[dict[str, Any]]:
+        if orient != "records":
+            raise ValueError("RecordList 仅支持 orient='records'")
+        return list(self)
+
+
 class Lake:
     """一个湖目录的连接包装。"""
 
@@ -53,18 +62,32 @@ class Lake:
     def view(self, layer: str, name: str) -> None:
         """把目录下的 parquet 暴露为视图。"""
         src = self.glob(layer, name)
+        self._view_named(self.view_name(layer, name), src)
+
+    def _view_named(self, view_name: str, glob_src: str) -> None:
         self.con.execute(
-            f"CREATE OR REPLACE VIEW {self.view_name(layer, name)} AS SELECT * FROM read_parquet('{src}')"
+            f"CREATE OR REPLACE VIEW {view_name} AS SELECT * FROM read_parquet('{glob_src}')"
         )
 
     def refresh_views(self) -> None:
-        for layer in ("ods", "dwd", "dws", "ads"):
+        for layer in ("landing", "quarantine", "ods", "dwd", "dws", "ads"):
             d = self.root / layer
             if not d.exists():
                 continue
             for sub in d.iterdir():
                 if sub.is_dir() and any(sub.glob("*.parquet")):
                     self.view(layer, sub.name)
+            # 准入台账是两级嵌套（row_ledger/table=X/…），拍平成可查视图。
+            if layer == "quarantine":
+                ledger_root = d / "row_ledger"
+                if ledger_root.exists():
+                    for tdir in ledger_root.iterdir():
+                        if tdir.is_dir() and any(tdir.glob("*.parquet")):
+                            table = tdir.name.split("=", 1)[-1]
+                            self._view_named(
+                                f"quarantine_row_ledger_{table}",
+                                str(tdir / "*.parquet"),
+                            )
 
     # ---------- 写入 ----------
 
@@ -153,8 +176,15 @@ class Lake:
         src = self.glob(layer, name)
         return self.con.execute(f"SELECT count(*) FROM read_parquet('{src}')").fetchone()[0]
 
-    def query_df(self, sql: str):
-        return self.con.execute(sql).fetchdf()
+    def query_df(self, sql: str) -> "RecordList":
+        """执行查询，返回轻量记录列表（dict 行）。
+
+        刻意不依赖 pandas：用 DuckDB 原生 fetchall + 列名构造，
+        行为与 ``fetchdf().to_dict('records')`` 一致，但无需安装重型依赖。
+        """
+        cur = self.con.execute(sql)
+        cols = [d[0] for d in cur.description]
+        return RecordList([dict(zip(cols, row)) for row in cur.fetchall()])
 
     def files(self, layer: str, name: str) -> int:
         p = self.table_path(layer, name)

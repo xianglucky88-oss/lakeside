@@ -31,18 +31,27 @@ def pipeline(lake_root):
 
 
 def test_generator_is_deterministic(lake_root):
-    """同一个 seed 生成的数据必须完全一致，否则无法回放与断言。"""
+    """同一个 seed 生成的数据必须完全一致，否则无法回放与断言。
+
+    生成器现在只产出落地批次；landing 文件按内容指纹命名，
+    两次生成的内容哈希与文件字节必须一致。
+    """
     from lakeside.generator import generate
+    import hashlib
+
+    def landing_fingerprint() -> dict[str, str]:
+        out = {}
+        for t in ("supplier", "purchase_order", "goods_receipt", "settlement"):
+            d = lake_root / "landing" / t
+            for f in sorted(d.glob("*.parquet")):
+                out[f"{t}/{f.name}"] = hashlib.sha256(f.read_bytes()).hexdigest()
+        return out
 
     a = generate(settings, n_suppliers=10, n_po=20)
-    first = {
-        t: lake_root.joinpath("ods", t, "part-0001.parquet").read_bytes()
-        for t in a
-    }
+    first = landing_fingerprint()
     b = generate(settings, n_suppliers=10, n_po=20)
     assert a == b
-    for t in first:
-        assert lake_root.joinpath("ods", t, "part-0001.parquet").read_bytes() == first[t]
+    assert landing_fingerprint() == first
 
 
 def test_ods_has_all_four_tables(pipeline):

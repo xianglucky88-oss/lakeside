@@ -9,6 +9,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from . import __version__
+from .admission.gate import AdmissionGate
+from .admission import models as M
 from .config import settings
 from .pipeline import Pipeline
 
@@ -21,6 +23,12 @@ def get_pipeline() -> Pipeline:
     if _pipeline is None:
         _pipeline = Pipeline()
     return _pipeline
+
+
+def get_gate() -> AdmissionGate:
+    return AdmissionGate(
+        settings.lake_root, tz_offset_hours=settings.source_tz_offset_hours
+    )
 
 
 @app.get("/healthz")
@@ -102,6 +110,71 @@ code{{background:#f4f4f4;padding:2px 5px;border-radius:3px}}</style></head>
 <table>{rows}</table>
 <p style="margin-top:24px;color:#666">DWS / ADS 当前是草稿状态，口径尚未定稿。</p>
 </body></html>"""
+
+
+@app.get("/admission")
+def admission(table: str | None = None) -> dict[str, Any]:
+    """批次级与逐表的接受/暂缓/隔离结论。"""
+    return get_pipeline().admission_report() if table is None else _gate_report(table)
+
+
+def _gate_report(table: str) -> dict[str, Any]:
+    gate = get_gate()
+    states: dict[str, int] = {}
+    for r in gate.read_ledger(table):
+        states[r["state"]] = states.get(r["state"], 0) + 1
+    return {
+        "table": table,
+        "contract_version": gate.registry.latest(table).version,
+        "states": states,
+        "batches": [b for b in gate.read_batches() if b["table_name"] == table],
+    }
+
+
+@app.get("/quarantine")
+def quarantine(table: str | None = None) -> dict[str, Any]:
+    """所有未决的暂缓/隔离行：原始证据、契约版本、错误码、恢复条件。"""
+    gate = get_gate()
+    rows = gate.open_decisions(table)
+    return {
+        "open": len(rows),
+        "rows": [
+            {
+                "table": r["table_name"],
+                "natural_key": r["natural_key_value"],
+                "state": r["state"],
+                "error_code": r["error_code"],
+                "error_detail": r["error_detail"],
+                "contract_version": r["contract_version"],
+                "source_file": r["source_file"],
+                "source_row_number": r["source_row_number"],
+                "content_hash": r["content_hash"],
+                "recovery_condition": r["recovery_condition"],
+            }
+            for r in rows
+        ],
+    }
+
+
+@app.post("/reprocess/{table}")
+def reprocess(table: str) -> dict[str, Any]:
+    """源系统修复后，对一张表的未决行做确定性重处理。"""
+    gate = get_gate()
+    result = gate.reprocess_quarantine(table)
+    get_pipeline().lake.refresh_views()
+    return result
+
+
+@app.get("/contracts")
+def contracts(table: str | None = None) -> dict[str, Any]:
+    """契约注册中心：每张表的全部历史版本。"""
+    gate = get_gate()
+    out: dict[str, Any] = {}
+    for t in gate.registry.tables():
+        if table and t != table:
+            continue
+        out[t] = [c.to_dict() for c in gate.registry.all_versions(t)]
+    return out
 
 
 @app.post("/reset")

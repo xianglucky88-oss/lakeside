@@ -15,6 +15,97 @@ from pathlib import Path
 
 from .config import settings
 from .pipeline import Pipeline, _read_sql
+from .admission.gate import AdmissionGate
+from .admission import models as M
+
+
+def _gate() -> AdmissionGate:
+    return AdmissionGate(
+        settings.lake_root, tz_offset_hours=settings.source_tz_offset_hours
+    )
+
+
+def cmd_admission(args) -> int:
+    """打印准入台账：批次结论 + 逐表 accepted/held/quarantined。"""
+    gate = _gate()
+    batches = gate.read_batches()
+    if args.table:
+        batches = [b for b in batches if b["table_name"] == args.table]
+    out = {
+        "batches": batches,
+        "row_ledger": {
+            t: _count_states(gate, t) for t in gate.registry.tables()
+            if not args.table or t == args.table
+        },
+        "open_decisions": len(
+            gate.open_decisions(args.table) if args.table else gate.open_decisions()
+        ),
+    }
+    print(json.dumps(out, ensure_ascii=False, indent=2, default=str))
+    return 0
+
+
+def _count_states(gate: AdmissionGate, table: str) -> dict[str, int]:
+    states: dict[str, int] = {}
+    for r in gate.read_ledger(table):
+        states[r["state"]] = states.get(r["state"], 0) + 1
+    return states
+
+
+def cmd_quarantine(args) -> int:
+    """列出仍处于 held / quarantined 的行及其证据与恢复条件。"""
+    gate = _gate()
+    rows = gate.open_decisions(args.table)
+    if not args.json:
+        if not rows:
+            print("没有待处理的暂缓/隔离记录。")
+            return 0
+        for r in rows:
+            print(
+                f"[{r['state']:<11}] {r['table_name']} key={r['natural_key_value']} "
+                f"code={r['error_code']} contract=v{r['contract_version']}\n"
+                f"    证据: {r['source_file']}#L{r['source_row_number']} hash={r['content_hash'][:12]}\n"
+                f"    原因: {r['error_detail']}\n"
+                f"    恢复: {r['recovery_condition']}"
+            )
+        return 1 if any(r["state"] == M.QUARANTINED for r in rows) else 0
+    print(json.dumps(rows, ensure_ascii=False, indent=2, default=str))
+    return 0
+
+
+def cmd_reprocess(args) -> int:
+    """对一张表的 held/quarantined 行做确定性重处理。"""
+    gate = _gate()
+    result = gate.reprocess_quarantine(args.table)
+    print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+    report = result.get("report")
+    if report and report["status"] == M.BATCH_DUPLICATE:
+        print("（批次内容与首次接入一致：维持原结论，未重复计入下游）")
+    return 0
+
+
+def cmd_contracts(args) -> int:
+    """查看已注册契约的版本与字段。"""
+    gate = _gate()
+    out = {}
+    for table in gate.registry.tables():
+        if args.table and table != args.table:
+            continue
+        out[table] = [
+            {
+                "version": c.version,
+                "natural_key": c.natural_key,
+                "uniqueness_key": c.uniqueness_key,
+                "fields": [
+                    {"name": f.name, "type": f.type, "required": f.required,
+                     "tz": f.tz_semantics}
+                    for f in c.fields
+                ],
+            }
+            for c in gate.registry.all_versions(table)
+        ]
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+    return 0
 
 
 def cmd_build(args) -> int:
@@ -101,6 +192,23 @@ def main(argv: list[str] | None = None) -> int:
     e = sub.add_parser("explain", help="打印某条 SQL 的执行计划")
     e.add_argument("sql_file")
     e.set_defaults(func=cmd_explain)
+
+    a = sub.add_parser("admission", help="查看准入批次与逐表结论")
+    a.add_argument("--table", choices=["supplier", "purchase_order", "goods_receipt", "settlement"])
+    a.set_defaults(func=cmd_admission)
+
+    q = sub.add_parser("quarantine", help="列出暂缓/隔离记录、证据与恢复条件")
+    q.add_argument("--table", choices=["supplier", "purchase_order", "goods_receipt", "settlement"])
+    q.add_argument("--json", action="store_true")
+    q.set_defaults(func=cmd_quarantine)
+
+    r = sub.add_parser("reprocess", help="重处理一张表的暂缓/隔离行")
+    r.add_argument("table", choices=["supplier", "purchase_order", "goods_receipt", "settlement"])
+    r.set_defaults(func=cmd_reprocess)
+
+    c = sub.add_parser("contracts", help="查看契约版本与字段定义")
+    c.add_argument("--table", choices=["supplier", "purchase_order", "goods_receipt", "settlement"])
+    c.set_defaults(func=cmd_contracts)
 
     args = ap.parse_args(argv)
     return args.func(args)
