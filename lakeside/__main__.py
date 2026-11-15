@@ -61,6 +61,17 @@ def cmd_verify(args) -> int:
             problems.append(f"DWS 入库金额与 ODS 真值之比 = {ratio:.4f}")
     if inv.get("ads_rows", 0) == 0:
         problems.append("ADS 产出为空")
+    # 供应商 SCD2 时态不变式：任一非零都意味着时间线或事实关联被破坏
+    for key, label in (
+        ("scd2_overlap_pairs", "供应商版本区间重叠"),
+        ("scd2_gap_pairs", "供应商版本区间断档"),
+        ("scd2_current_dupes", "存在多个当前版本的供应商"),
+        ("fact_multi_match", "命中多个供应商版本的事实"),
+    ):
+        if inv.get(key, 0):
+            problems.append(f"{label} {inv[key]:.0f} 个/条")
+    if inv.get("fact_unresolved", 0):
+        problems.append(f"未关联到任何供应商版本的事实 {inv['fact_unresolved']:.0f} 条")
 
     if problems:
         print("\n== 守恒检查：发现问题 ==")

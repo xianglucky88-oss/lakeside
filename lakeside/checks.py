@@ -81,4 +81,27 @@ def check_invariants(inv: dict[str, float], tolerance: float = 0.01) -> list[dic
             f"ADS {ads_po:,.0f} / ODS {ods_po:,.0f} = {ratio:.4f}",
         )
 
+    # 8. 供应商 SCD2 时态不变式：区间不重叠、不断档、当前版本唯一
+    add(
+        "scd2.no_overlap",
+        inv.get("scd2_overlap_pairs", 0) == 0,
+        f"重叠版本对 {inv.get('scd2_overlap_pairs', 0):.0f} 个",
+    )
+    add(
+        "scd2.no_gap",
+        inv.get("scd2_gap_pairs", 0) == 0,
+        f"断档版本对 {inv.get('scd2_gap_pairs', 0):.0f} 个",
+    )
+    add(
+        "scd2.single_current",
+        inv.get("scd2_current_dupes", 0) == 0,
+        f"存在多个当前版本的供应商 {inv.get('scd2_current_dupes', 0):.0f} 个",
+    )
+    # 事实点时态关联：每条事实至多命中一个版本（I3 的事实侧保证）
+    add(
+        "scd2.fact_single_match",
+        inv.get("fact_multi_match", 0) == 0,
+        f"命中多个供应商版本的事实 {inv.get('fact_multi_match', 0):.0f} 条",
+    )
+
     return out

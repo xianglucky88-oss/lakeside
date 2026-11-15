@@ -20,6 +20,12 @@ from typing import Callable
 from .config import settings
 from .engine import Lake
 from .generator import generate
+from .temporal import (
+    build_supplier_dim,
+    count_unresolved_facts,
+    ingest_supplier_changelog,
+    temporal_invariants,
+)
 
 QUERY_DIR = Path(__file__).resolve().parent.parent / "sql"
 
@@ -59,6 +65,7 @@ class Pipeline:
         self.lake = lake or Lake(settings.lake_root)
         self.results: list[AssetResult] = []
         self.notes: list[str] = []
+        self.temporal_report: dict | None = None
 
     # ---------- ODS ----------
 
@@ -83,13 +90,34 @@ class Pipeline:
 
     def build_dwd(self) -> list[AssetResult]:
         out = []
-        # 维表：整表覆盖写入。
-        out.append(
-            self._build_asset("dwd", "dim_supplier", keys=["supplier_id"], merge=False)
+        # 供应商时态维度：
+        # 1) 变更只追加进 changelog（内容寻址去重，乱序/重放幂等）；
+        # 2) 从 changelog 全量原子重建 SCD2 版本表与隔离区；
+        # 3) 注册 SCD1 兼容视图 dwd_dim_supplier，老读法不改 SQL。
+        start = time.perf_counter()
+        new_rows = ingest_supplier_changelog(self.lake)
+        report = build_supplier_dim(self.lake)
+        report.changelog_new_rows = new_rows
+        self.temporal_report = report.to_dict()
+        scd2_asset = AssetResult(
+            name="dwd.dim_supplier_scd2",
+            rows=report.version_rows,
+            seconds=time.perf_counter() - start,
+            extra={
+                "changelog_rows": float(report.changelog_rows),
+                "rejected_rows": float(report.rejected_rows),
+                "unresolved_facts": 0.0,
+            },
         )
-        # 事实表：直接覆盖
+        out.append(scd2_asset)
+        self.results.append(scd2_asset)
+        # 事实表：直接覆盖。采购事实在 SQL 内做一次点时态关联解析 supplier_sk。
         for name in ("fact_purchase_order", "fact_goods_receipt", "fact_settlement"):
             out.append(self._build_asset("dwd", name, keys=[], merge=False))
+        # 事实构建完才能统计未解析数，回填到报告与 asset 指标
+        report.unresolved_facts = count_unresolved_facts(self.lake)
+        self.temporal_report = report.to_dict()
+        scd2_asset.extra["unresolved_facts"] = float(report.unresolved_facts)
         return out
 
     # ---------- DWS ----------
@@ -117,6 +145,7 @@ class Pipeline:
             "logical_date": settings.logical_date,
             "total_seconds": round(total, 3),
             "assets": [r.to_dict() for r in self.results],
+            "temporal_dimension": self.temporal_report,
             "note": "dws/ads 为草稿状态，金额口径尚未定稿",
         }
 
@@ -202,6 +231,9 @@ class Pipeline:
                     "SELECT coalesce(sum(settled_cents),0) FROM ads_supplier_monthly"
                 ).fetchone()[0]
             )
+
+        # 供应商时态维度（SCD2）不变式：重叠/断档/多当前版本/事实多重命中都应为 0
+        out.update(temporal_invariants(lk))
         return out
 
     def month_boundary_check(self) -> list[dict]:

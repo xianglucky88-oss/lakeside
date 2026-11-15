@@ -13,11 +13,16 @@
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 from typing import Any
 
 import duckdb
+
+# 持久化逻辑视图的元数据文件。视图定义随湖目录走，
+# 新进程打开湖时按它重建视图，不依赖任何引擎私有 catalog。
+VIEW_META_FILE = "_meta/views.json"
 
 
 class Lake:
@@ -50,6 +55,17 @@ class Lake:
         p = self.table_path(layer, name)
         return p.exists() and any(p.glob("*.parquet"))
 
+    def ensure_empty(self, layer: str, name: str, columns: dict[str, str]) -> None:
+        """按给定 {列: 类型} 建一张空 parquet 表（已存在则不动）。
+
+        用于让"首跑即引用目标表"的幂等 SQL（如 NOT EXISTS 去重摄入）
+        在第一次运行时也有合法的解析目标。
+        """
+        if self.exists(layer, name):
+            return
+        col_sql = ", ".join(f"CAST(NULL AS {typ}) AS {col}" for col, typ in columns.items())
+        self.write(f"SELECT {col_sql} WHERE false", layer, name)
+
     def view(self, layer: str, name: str) -> None:
         """把目录下的 parquet 暴露为视图。"""
         src = self.glob(layer, name)
@@ -57,14 +73,53 @@ class Lake:
             f"CREATE OR REPLACE VIEW {self.view_name(layer, name)} AS SELECT * FROM read_parquet('{src}')"
         )
 
+    @property
+    def view_meta_path(self) -> Path:
+        return self.root / VIEW_META_FILE
+
+    def _load_view_meta(self) -> dict[str, str]:
+        p = self.view_meta_path
+        if not p.exists():
+            return {}
+        return json.loads(p.read_text(encoding="utf-8"))
+
+    def _save_view_meta(self, meta: dict[str, str]) -> None:
+        p = self.view_meta_path
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def register_logical_view(self, view_name: str, sql: str) -> None:
+        """注册持久化逻辑视图（如 SCD1 兼容视图）。
+
+        定义写入湖目录的元数据文件并立即在当前连接创建，
+        新进程通过 refresh_views 自动恢复，不依赖内存 catalog。
+        """
+        meta = self._load_view_meta()
+        meta[view_name] = sql
+        self._save_view_meta(meta)
+        self.con.execute(f"CREATE OR REPLACE VIEW {view_name} AS {sql}")
+
+    def drop_logical_view(self, view_name: str) -> None:
+        meta = self._load_view_meta()
+        meta.pop(view_name, None)
+        self._save_view_meta(meta)
+        self.con.execute(f"DROP VIEW IF EXISTS {view_name}")
+
     def refresh_views(self) -> None:
         for layer in ("ods", "dwd", "dws", "ads"):
             d = self.root / layer
             if not d.exists():
                 continue
             for sub in d.iterdir():
-                if sub.is_dir() and any(sub.glob("*.parquet")):
+                # 只跳过点号开头的隐藏临时目录（.staging/.backup）；
+                # 下划线开头的是合法表名，_meta 是视图元数据目录。
+                if sub.name.startswith(".") or sub.name == "_meta" or not sub.is_dir():
+                    continue
+                if any(sub.glob("*.parquet")):
                     self.view(layer, sub.name)
+        # 恢复持久化逻辑视图（兼容层）
+        for view_name, sql in self._load_view_meta().items():
+            self.con.execute(f"CREATE OR REPLACE VIEW {view_name} AS {sql}")
 
     # ---------- 写入 ----------
 
@@ -100,6 +155,38 @@ class Lake:
         self.refresh_views()
         return self.count(layer, name)
 
+    def rewrite(self, sql: str, layer: str, name: str) -> int:
+        """整表原子重写：写临时目录，再 rename 替换。
+
+        与 write() 的区别：目标表的旧文件在替换瞬间整体失效，
+        不依赖人工或作业去清理旧分区，也不会留下半写状态——
+        临时目录以 '.' 开头，refresh_views 不会注册它。
+        重跑/重建任意次数，物理上始终只有一份数据文件。
+        """
+        dest = self.table_path(layer, name)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        staging = dest.parent / f".{name}.staging"
+        backup = dest.parent / f".{name}.backup"
+        # 清理上次失败可能残留的隐藏目录（它们不会被视图注册）
+        self._rmtree(staging)
+        self._rmtree(backup)
+        staging.mkdir(parents=True, exist_ok=True)
+        out = staging / "part-0001.parquet"
+        self.con.execute(f"COPY ({sql}) TO '{out}' (FORMAT PARQUET)")
+        if dest.exists():
+            dest.rename(backup)
+        staging.rename(dest)
+        if backup.exists():
+            self._rmtree(backup)
+        self.refresh_views()
+        return self.count(layer, name)
+
+    @staticmethod
+    def _rmtree(p: Path) -> None:
+        import shutil
+
+        shutil.rmtree(p, ignore_errors=True)
+
     def merge(self, layer: str, name: str, source_sql: str, keys: list[str], update_set: dict[str, str]) -> int:
         """MERGE 语义的 upsert：匹配则更新、不匹配则插入。
 
@@ -110,15 +197,20 @@ class Lake:
 
         tmp = f"_staging_{name}"
         self.con.execute(f"CREATE OR REPLACE TEMP TABLE {tmp} AS {source_sql}")
+        # 空源必须短路：否则下面的 JOIN 会产出 0 行，把已有目标表整体清空
+        if self.con.execute(f"SELECT count(*) FROM {tmp}").fetchone()[0] == 0:
+            return self.count(layer, name)
         target = self.view_name(layer, name)
         cols = [r[0] for r in self.con.execute(f"DESCRIBE {target}").fetchall()]
         target_set = set(cols)
 
-        # 目标列：除更新列外都取 t，更新列取 s。
+        # 目标列：更新列取 s（未匹配时 s 为 NULL，COALESCE 回退到 t），其余取 t。
+        # 关键：必须 LEFT JOIN，保证没有任何 staging 行匹配的目标行原样保留，
+        # 而不是被 upsert 静默删除。
         select_items = []
         for c in cols:
             if c in update_set:
-                select_items.append(f"s.{update_set[c]} AS {c}")
+                select_items.append(f"COALESCE(s.{update_set[c]}, t.{c}) AS {c}")
             else:
                 select_items.append(f"t.{c} AS {c}")
         key_match = " AND ".join(f"t.{k} = s.{k}" for k in keys)
@@ -126,7 +218,7 @@ class Lake:
         merged = f"""
             SELECT {', '.join(select_items)}
             FROM {target} t
-            JOIN {tmp} s ON {key_match}
+            LEFT JOIN {tmp} s ON {key_match}
             UNION ALL
             SELECT {', '.join('s.' + c for c in cols)}
             FROM {tmp} s

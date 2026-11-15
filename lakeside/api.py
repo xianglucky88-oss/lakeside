@@ -50,6 +50,23 @@ def invariants() -> dict[str, float]:
     return get_pipeline().invariants()
 
 
+@app.get("/temporal")
+def temporal() -> dict[str, Any]:
+    """供应商 SCD2 时态维度的构建报告与隔离区样本。"""
+    p = get_pipeline()
+    report = p.temporal_report or {}
+    rejects = []
+    if p.lake.exists("dwd", "dim_supplier_reject"):
+        rejects = p.lake.query_df(
+            "SELECT supplier_id, reject_reason, valid_from, updated_at "
+            "FROM dwd_dim_supplier_reject ORDER BY supplier_id LIMIT 50"
+        ).to_dict("records")
+    return {
+        "report": report,
+        "rejected_samples": rejects,
+    }
+
+
 @app.get("/month-boundary")
 def month_boundary() -> dict[str, Any]:
     rows = get_pipeline().month_boundary_check()

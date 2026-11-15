@@ -69,9 +69,18 @@ class SparkIcebergLake:
         )
 
     def build_all(self) -> dict[str, Any]:
-        """按层执行。这个是生产入口，本地不用。"""
+        """按层执行。这个是生产入口，本地不用。
+
+        供应商维度走 SCD2 时态模型（与 DuckDB 路径共享同一份 SQL）：
+            changelog 摄入（按 record_hash 去重）→ SCD2 版本表与隔离区全量重写。
+        Iceberg 用 INSERT OVERWRITE 整表替换，等价于本地的原子 rewrite，
+        不需要人工清理旧分区；兼容视图 dwd_dim_supplier 由元数据持久化。
+        """
         layers = [
-            ("dwd", "dim_supplier"),
+            # 供应商时态维度：先 changelog，再版本表/隔离区
+            ("dwd", "supplier_changelog"),
+            ("dwd", "dim_supplier_scd2"),
+            ("dwd", "dim_supplier_reject"),
             ("dwd", "fact_purchase_order"),
             ("dwd", "fact_goods_receipt"),
             ("dwd", "fact_settlement"),
