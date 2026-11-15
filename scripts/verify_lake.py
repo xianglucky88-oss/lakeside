@@ -42,6 +42,7 @@ def main() -> int:
     results = check_invariants(inv, tolerance=args.tolerance)
     month = p.month_boundary_check()
     mismatches = [r for r in month if r["dwd_date"] != r["true_local_date"]]
+    risks = p.risk_summary()
 
     if args.json:
         print(
@@ -49,6 +50,7 @@ def main() -> int:
                 {
                     "invariants": inv,
                     "checks": results,
+                    "risks": risks,
                     "month_boundary": {
                         "checked": len(month),
                         "mismatch": len(mismatches),
@@ -63,10 +65,25 @@ def main() -> int:
     else:
         print("== 关键指标 ==")
         for k, v in inv.items():
-            print(f"  {k:26} {v:>18,.0f}")
+            print(f"  {k:36} {v:>18,.0f}")
         print("\n== 守恒断言 ==")
         for r in results:
             print(f"  [{'PASS' if r['ok'] else 'FAIL'}] {r['name']}: {r['detail']}")
+        if risks:
+            print("\n== 履约状态分布（as_of={}） ==".format(risks.get("as_of_date")))
+            for k, v in sorted(risks.get("status_counts", {}).items()):
+                print(f"  {k:16} {v:>6}")
+            print("  -- 风险码 --")
+            for k, v in sorted(risks.get("risk_code_counts", {}).items()):
+                print(f"  {k:24} {v:>6}")
+            print(
+                "  未结算 {unsettled_po} ｜ 未入库 {no_receipt_po} ｜ 数据缺失 {data_issue_po}".format(
+                    **risks
+                )
+            )
+            print("  -- 隔离事件 --")
+            for k, v in sorted(risks.get("rejected_events", {}).items()):
+                print(f"  {k:24} {v:>6}")
         print(f"\n== 月末归属 ==\n  抽查 {len(month)} 条深夜结算，跨日错误 {len(mismatches)} 条")
         for r in mismatches[:3]:
             print(

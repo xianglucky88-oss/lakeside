@@ -42,30 +42,28 @@ def cmd_build(args) -> int:
 
 
 def cmd_verify(args) -> int:
+    from .checks import check_invariants
+
     p = Pipeline()
     inv = p.invariants()
     print(json.dumps(inv, ensure_ascii=False, indent=2))
 
-    problems = []
-    if inv.get("dwd_po_rows", 0) > inv.get("dwd_po_distinct", 0):
-        problems.append(
-            f"DWD 采购单行数 {inv['dwd_po_rows']:.0f} / 去重 po_id {inv['dwd_po_distinct']:.0f}"
-        )
-    if inv.get("ods_po_amount_cents") and inv.get("dws_po_amount_cents"):
-        ratio = inv["dws_po_amount_cents"] / inv["ods_po_amount_cents"]
-        if abs(ratio - 1) > 0.01:
-            problems.append(f"DWS 采购金额与 ODS 真值之比 = {ratio:.4f}")
-    if inv.get("ods_gr_amount_cents") and inv.get("dws_received_cents"):
-        ratio = inv["dws_received_cents"] / inv["ods_gr_amount_cents"]
-        if abs(ratio - 1) > 0.05:
-            problems.append(f"DWS 入库金额与 ODS 真值之比 = {ratio:.4f}")
-    if inv.get("ads_rows", 0) == 0:
-        problems.append("ADS 产出为空")
+    results = check_invariants(inv)
+    problems = [f"{r['name']}: {r['detail']}" for r in results if not r["ok"]]
+    month_bad = [
+        r for r in p.month_boundary_check() if r["dwd_date"] != r["true_local_date"]
+    ]
+    if month_bad:
+        problems.append(f"月末归属错误 {len(month_bad)} 条（UTC 跨日未按本地时区换算）")
+    risks = p.risk_summary()
+    if risks:
+        print("\n== 履约风险分布 ==")
+        print(json.dumps(risks, ensure_ascii=False, indent=2))
 
     if problems:
         print("\n== 守恒检查：发现问题 ==")
-        for i, p_ in enumerate(problems, 1):
-            print(f"  {i}. {p_}")
+        for i, msg in enumerate(problems, 1):
+            print(f"  {i}. {msg}")
     else:
         print("\n== 守恒检查：全部通过 ==")
     p.close()

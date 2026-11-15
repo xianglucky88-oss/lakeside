@@ -44,7 +44,9 @@ class SparkIcebergLake:
         )
 
     def run_sql_file(self, path: Path, target: str) -> None:
-        sql = path.read_text(encoding="utf-8")
+        from .pipeline import _render  # noqa: PLC0415
+
+        sql = _render(path.read_text(encoding="utf-8"))
         self.spark.sql(f"CREATE OR REPLACE TEMP VIEW _src AS {sql}")
         self.spark.sql(f"INSERT OVERWRITE {target} SELECT * FROM _src")
 
@@ -75,7 +77,10 @@ class SparkIcebergLake:
             ("dwd", "fact_purchase_order"),
             ("dwd", "fact_goods_receipt"),
             ("dwd", "fact_settlement"),
+            ("dwd", "reject_event"),
             ("dws", "dws_po_summary"),
+            ("dws", "dws_po_fulfillment"),
+            ("ads", "ads_po_fulfillment_risk"),
             ("ads", "ads_supplier_monthly"),
         ]
         done = []

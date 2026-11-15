@@ -61,6 +61,18 @@ def month_boundary() -> dict[str, Any]:
     }
 
 
+@app.get("/risks")
+def risks() -> dict[str, Any]:
+    """履约风险分布：状态、风险码、隔离事件、未结算/未入库/数据缺失分开。"""
+    return get_pipeline().risk_summary()
+
+
+@app.get("/po/{po_id}/evidence")
+def po_evidence(po_id: str) -> dict[str, Any]:
+    """单个采购单的风险结论、业务事实与计算时点（含全部快照版本）。"""
+    return get_pipeline().po_evidence(po_id)
+
+
 @app.get("/catalog")
 def catalog() -> dict[str, Any]:
     """列出各层有哪些表、多少文件、多少行。"""
@@ -97,10 +109,14 @@ def index() -> str:
 <style>body{{font-family:system-ui,-apple-system,sans-serif;max-width:760px;margin:40px auto;padding:0 16px}}
 table{{border-collapse:collapse;width:100%}}td{{border-bottom:1px solid #eee;padding:6px 4px}}
 code{{background:#f4f4f4;padding:2px 5px;border-radius:3px}}</style></head>
-<body><h1>lakeside · 湖仓管线</h1>
+<body><h1>lakeside · 采购履约时效</h1>
 <p>逻辑日期 <code>{settings.logical_date}</code> ｜ 版本 <code>{__version__}</code></p>
 <table>{rows}</table>
-<p style="margin-top:24px;color:#666">DWS / ADS 当前是草稿状态，口径尚未定稿。</p>
+<p style="margin-top:24px">
+  <a href="/risks">/risks</a> 风险分布 ｜
+  <a href="/catalog">/catalog</a> 分层目录 ｜
+  <code>/po/{'{po_id}'}/evidence</code> 单证据
+</p>
 </body></html>"""
 
 

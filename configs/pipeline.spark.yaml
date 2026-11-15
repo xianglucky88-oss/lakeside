@@ -27,10 +27,11 @@ layers:
     write_mode: dynamic-overwrite
   dws:
     format: iceberg
-    partition_keys: [biz_date]
+    # 履约宽表是双时态快照：按计算时点分区，补传重算只覆盖对应快照
+    partition_keys: [as_of_date]
   ads:
     format: iceberg
-    partition_keys: [month]
+    partition_keys: [as_of_date]
 
 schedule:
   # 等价于 Dagster 的 cron，生产由调度器触发

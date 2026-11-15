@@ -22,15 +22,14 @@ jobs:
         env:
           LAKE_ROOT: /tmp/lake
         run: python -m lakeside build
-      - name: verify (expected to fail until debts are paid)
+      - name: verify (conservation + fulfillment guardrails)
         env:
           LAKE_ROOT: /tmp/lake
-        run: python scripts/verify_lake.py || true
+        run: python scripts/verify_lake.py
       - name: verify json artifact
-        if: always()
         env:
           LAKE_ROOT: /tmp/lake
-        run: python scripts/verify_lake.py --json > invariants.json || true
+        run: python scripts/verify_lake.py --json > invariants.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:

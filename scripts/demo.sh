@@ -1,11 +1,11 @@
 #!/bin/sh
-# demo.sh —— 90 秒内录完的固定演示。
+# demo.sh —— 固定演示序列。
 #
 #   1. 全量构建（ODS -> DWD -> DWS -> ADS）
-#   2. 打印各层行数
-#   3. 跑守恒断言，展示金额被放大多少倍
-#   4. 再跑一次构建，观察"重跑是否翻倍"
-#   5. 打印月末归属错误样本
+#   2. 打印各层行数与快照分区
+#   3. 跑守恒断言与履约风险分布
+#   4. 再跑一次构建，观察整表/分区覆盖是否幂等（金额不翻倍）
+#   5. 打印月末归属校验（UTC 跨日按本地时区换算后应为 0 错误）
 set -eu
 cd "$(dirname "$0")/.."
 export LAKE_ROOT="${LAKE_ROOT:-/tmp/lakeside-demo}"
@@ -15,13 +15,13 @@ say() { printf '\n=== %s ===\n' "$1"; }
 say "1. 全量构建"
 python3 -m lakeside build
 
-say "2. 目录结构（层 / 表 / 文件数）"
+say "2. 目录结构（层 / 表 / 分区文件数）"
 find "$LAKE_ROOT" -name "*.parquet" | sed "s|$LAKE_ROOT/||" | sort
 
-say "3. 守恒断言"
+say "3. 守恒断言与风险分布"
 python3 scripts/verify_lake.py || true
 
-say "4. 重跑一次，观察 DWS 是否翻倍"
+say "4. 重跑一次，观察金额是否翻倍（不应翻倍）"
 python3 -m lakeside build --layer dws >/dev/null
 python3 scripts/verify_lake.py || true
 

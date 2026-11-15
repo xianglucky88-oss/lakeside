@@ -44,11 +44,14 @@ class Lake:
         return self.root / layer / name
 
     def glob(self, layer: str, name: str) -> str:
-        return str(self.table_path(layer, name) / "*.parquet")
+        # ** 递归匹配：分区表文件在 as_of_date=... 子目录里，
+        # 单层 * 跨不过目录分隔符；非分区表的顶层文件同样能被 ** 命中。
+        return str(self.table_path(layer, name) / "**" / "*.parquet")
 
     def exists(self, layer: str, name: str) -> bool:
         p = self.table_path(layer, name)
-        return p.exists() and any(p.glob("*.parquet"))
+        # rglob 才能命中分区子目录（as_of_date=.../part-*.parquet）里的文件
+        return p.exists() and any(p.rglob("*.parquet"))
 
     def view(self, layer: str, name: str) -> None:
         """把目录下的 parquet 暴露为视图。"""
@@ -63,7 +66,7 @@ class Lake:
             if not d.exists():
                 continue
             for sub in d.iterdir():
-                if sub.is_dir() and any(sub.glob("*.parquet")):
+                if sub.is_dir() and any(sub.rglob("*.parquet")):
                     self.view(layer, sub.name)
 
     # ---------- 写入 ----------
@@ -82,12 +85,20 @@ class Lake:
             out = dest / "part-0001.parquet"
             self.con.execute(f"COPY ({sql}) TO '{out}' (FORMAT PARQUET, OVERWRITE_OR_IGNORE)")
         else:
-            rows = self.con.execute(f"SELECT DISTINCT {partition_by} FROM ({sql})").fetchall()
+            # 分区值统一在 SQL 内 CAST 成 VARCHAR：目录命名与 WHERE 字面量
+            # 始终用同一种字符串形态，避免 DATE/TIMESTAMP 的 Python str() 与
+            # 引擎隐式转换不一致导致分区裁剪落空。
+            rows = self.con.execute(
+                f"SELECT DISTINCT CAST({partition_by} AS VARCHAR) AS pv FROM ({sql})"
+            ).fetchall()
             for (val,) in rows:
                 safe = str(val).replace("/", "_")
                 pdir = dest / f"{partition_by}={safe}"
                 pdir.mkdir(parents=True, exist_ok=True)
-                inner = f"SELECT * FROM ({sql}) WHERE {partition_by} = ?"
+                inner = (
+                    f"SELECT * FROM ({sql}) "
+                    f"WHERE CAST({partition_by} AS VARCHAR) = {repr(val)}"
+                )
                 out = pdir / "part-0001.parquet"
                 # 固定文件名 + OVERWRITE_OR_IGNORE：重跑时原子替换该分区，
                 # 不需要先删目录（在只读挂载或对象存储上也能工作）。
@@ -154,7 +165,25 @@ class Lake:
         return self.con.execute(f"SELECT count(*) FROM read_parquet('{src}')").fetchone()[0]
 
     def query_df(self, sql: str):
-        return self.con.execute(sql).fetchdf()
+        """执行查询，返回带 to_dict('records') 的结果对象。
+
+        不依赖 pandas/numpy：用普通 dict 列表承载行，既满足调用方
+        按 records 取数的习惯，也避免为单机验证引入重型依赖。
+        """
+        cur = self.con.execute(sql)
+        cols = [d[0] for d in cur.description]
+
+        class _Records:
+            def __init__(self, columns, rows):
+                self.columns = columns
+                self._rows = rows
+
+            def to_dict(self, orient: str = "records"):
+                if orient != "records":
+                    raise ValueError("only orient='records' is supported")
+                return [dict(zip(self.columns, row)) for row in self._rows]
+
+        return _Records(cols, cur.fetchall())
 
     def files(self, layer: str, name: str) -> int:
         p = self.table_path(layer, name)
